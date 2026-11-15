@@ -1,0 +1,11 @@
+{
+  "branch": "daily-digest",
+  "base": "main",
+  "expected": [
+    {"id": "unsubscribed_still_emailed", "kind": "issue", "match": "unsubscrib"},
+    {"id": "hourly_limit_bypassed", "kind": "issue", "match": "(bypass|skip|ignor|around|without).{0,60}(limit|limiter|allowed|send\\()|deliver.{0,40}direct|not (go|going) through send"},
+    {"id": "server_time_not_user_time", "kind": "issue", "match": "time ?zone|server('s)? (time|clock|hour)|local time|getHours"},
+    {"id": "only_first_hundred", "kind": "issue", "match": "100|slice|first hundred|truncat|only the first"},
+    {"id": "hourly_limit_raised", "kind": "decision", "match": "MAX_PER_HOUR|3 to 10|from 3|ten (emails|per hour)|10 (emails|per hour)|limit.{0,30}(raised|increased|changed)"}
+  ]
+}

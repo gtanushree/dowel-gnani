@@ -1,0 +1,49 @@
+[project]
+name = "dowel"
+version = "0.1.0"
+description = "Keeps what you decided about a change, shows it to the next coding agent, and holds later changes to it."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=1.0",
+    "fastapi>=0.163.0",
+    "httpx>=0.27",
+    "livekit-agents[anthropic,cartesia,deepgram,sarvam,silero]~=1.8",
+    "livekit-api>=1.2",
+    "livekit-plugins-gnani>=1.8.12",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+    "rich>=13.7",
+    "tree-sitter-language-pack>=1.25.0",
+    "typer>=0.12",
+    "uvicorn>=0.30",
+]
+
+[project.scripts]
+dowel = "dowel.cli:app"
+dowel-hook = "dowel.hook:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dowel"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+# Stated here so the result does not depend on anyone's own ruff settings.
+select = ["E", "F", "I", "B", "UP", "SIM", "BLE", "RUF", "ASYNC", "S110", "ISC", "PLR1704", "PLW1510", "PLC0206"]
+# Long lines are allowed where breaking them hurts: prompts, test data and evaluation cases.
+# ASYNC240: resolving a local path inside async code is microseconds, not a blocked loop.
+ignore = ["E501", "RUF001", "ASYNC240"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E731", "ASYNC"]
+"eval/*" = ["ASYNC"]

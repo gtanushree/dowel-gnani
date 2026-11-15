@@ -1,0 +1,10 @@
+{
+  "branch": "bulk-reserve",
+  "base": "main",
+  "expected": [
+    {"id": "partial_reservation_left", "kind": "issue", "match": "partial|roll ?back|earlier (lines|items|reservations)|already[- ]reserved|left (reserved|held|behind)|not (released|undone)|atomic"},
+    {"id": "negative_quantity_allowed", "kind": "issue", "match": "negative|zero or negative|quantity.{0,30}(validat|check|positive)|<= ?0"},
+    {"id": "failure_reported_as_success", "kind": "issue", "match": "ok.{0,12}true|report(s|ed)? success|success.{0,30}(even|when|although)|swallow|out_of_stock.{0,40}(lost|hidden|never)"},
+    {"id": "reservation_time_changed", "kind": "decision", "match": "15.{0,20}60|60 minutes|RESERVATION_MINUTES|hold time|expiry|expire"}
+  ]
+}

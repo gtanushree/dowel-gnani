@@ -1,0 +1,577 @@
+{
+  "repo": "/demo/payments",
+  "base": "main",
+  "head": "retry-webhooks",
+  "files_changed": 3,
+  "lines_changed": 35,
+  "parts": 1,
+  "skipped": [],
+  "fast_checks": [],
+  "fast_check_summary": {},
+  "intent": {
+    "summary": "Webhook delivery now retries failed HTTP attempts, sleeping with exponentially growing delays between tries and marking the delivery as failed if all attempts are exhausted. Retry count and base delay are new config fields. The change also makes load_config fall back to built-in defaults with a warning when the config file is missing, instead of raising ConfigMissing, which the description does not mention.",
+    "claims": [
+      {
+        "id": "c1",
+        "text": "Failed webhook deliveries are retried up to three times.",
+        "kind": "does"
+      },
+      {
+        "id": "c2",
+        "text": "Retries use exponential backoff between attempts.",
+        "kind": "does"
+      }
+    ],
+    "confidence": "medium"
+  },
+  "findings": [
+    {
+      "id": "h1",
+      "kind": "decision",
+      "title": "A missing config file now falls back to defaults instead of raising, so webhooks go out unsigned.",
+      "file": "config/loader.py",
+      "line": 31,
+      "hypothesis": {
+        "id": "h1",
+        "statement": "load_config now returns defaults when the config file is missing instead of raising ConfigMissing. jobs/redeliver.py catches ConfigMissing, so that handler becomes dead code and the job will run with defaults (verify_signature False, empty signing_secret) and send unsigned webhooks instead of aborting.",
+        "bug_class": "contract_or_caller",
+        "file": "config/loader.py",
+        "line": 31,
+        "check": "Read jobs/redeliver.py around lines 10-16 to see what the except ConfigMissing branch does (skip, alert, exit). Check whether app.py relied on the raise to fail fast at startup."
+      },
+      "verdict": {
+        "status": "confirmed",
+        "reasoning": "With the config file absent, load_config now returns Config(**DEFAULTS), which has verify_signature=False and an empty signing_secret, instead of raising. jobs/redeliver.py's except ConfigMissing branch can no longer run, so the job skips its 'webhooks not enabled here' early return and calls deliver() on every pending item. deliver() only adds the x-signature header when verify_signature is true, so these webhooks go out unsigned. app.py's startup call also no longer fails fast on a missing config; it prints 'signature checking: False' and continues.",
+        "evidence": [
+          {
+            "file": "config/loader.py",
+            "start_line": 31,
+            "end_line": 34,
+            "quote": "def load_config(path: Path) -> Config:\n    if not path.exists():\n        log.warning(\"config missing, using defaults\")"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 34,
+            "end_line": 35,
+            "quote": "        return Config(**DEFAULTS)"
+          },
+          {
+            "file": "jobs/redeliver.py",
+            "start_line": 9,
+            "end_line": 17,
+            "quote": "    try:\n        config = load_config(config_path)\n    except ConfigMissing:\n        # No config on this host means webhooks are not enabled here: do nothing.\n        return 0\n    sent = 0\n    for delivery in pending:\n        deliver(delivery, config)"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 28,
+            "end_line": 29,
+            "quote": "    if config.verify_signature:\n        headers[\"x-signature\"] = sign(config.signing_secret, body)"
+          },
+          {
+            "file": "app.py",
+            "start_line": 10,
+            "end_line": 11,
+            "quote": "    config = load_config(CONFIG_PATH)\n    print(f\"payments service up, signature checking: {config.verify_signature}\")"
+          }
+        ],
+        "trigger": "A host without /etc/payments/config.toml runs the nightly redeliver job while there are pending deliveries. run() gets defaults, skips the early return, and sends each pending payload to its customer URL with no x-signature header.",
+        "question_for_author": ""
+      },
+      "review": {
+        "holds": true,
+        "kind": "issue",
+        "title": "load_config now returns defaults for a missing file, so redeliver's except ConfigMissing never runs and the job sends unsigned webhooks instead of returning 0.",
+        "refutation_attempt": "I looked for a guard or other source of ConfigMissing. A grep for `raise ConfigMissing` finds nothing, so the exception is defined but never raised. load_config returns Config(**DEFAULTS) when the path is missing, and DEFAULTS has verify_signature=False and no secret. run() therefore skips the early return and calls deliver() for each pending item. The quoted deliver.py adds x-signature only when verify_signature is true. I could not read the old version of loader.py because the tool budget ran out, so I did not confirm that it raised ConfigMissing. The remaining code is consistent with the claim, and I found nothing that blocks the path.",
+        "question": ""
+      },
+      "question": "Keep the silent fallback, or restore the ConfigMissing failure?",
+      "detail": "The redeliver job's 'not enabled here' early return can no longer run, so hosts without config now send pending webhooks to customers with no signature, and startup no longer fails fast.",
+      "priority": "P1",
+      "memory": "",
+      "merged": [
+        "h2"
+      ],
+      "searched": [
+        "grep /ConfigMissing|load_config/ in .",
+        "jobs/redeliver.py:1-40",
+        "app.py:1-20",
+        "webhooks/deliver.py:1-40"
+      ],
+      "jev": {
+        "evidence_supports": 0.78,
+        "stated_in_description": 0.83
+      }
+    },
+    {
+      "id": "h5",
+      "kind": "issue",
+      "title": "Default config makes 3 total attempts (2 retries), not 3 retries; max_retries=0 sends nothing.",
+      "file": "webhooks/deliver.py",
+      "line": 30,
+      "hypothesis": {
+        "id": "h5",
+        "statement": "The description says retries up to three times, but the loop runs max_retries total attempts, which is 3 including the first. That means 2 retries, not 3. With max_retries=0 the loop never runs, nothing is sent, and status is set to failed.",
+        "bug_class": "missing_behaviour",
+        "file": "webhooks/deliver.py",
+        "line": 29,
+        "check": "Check the semantics of max_retries (attempts vs retries) against the description. Consider a config with max_retries=0."
+      },
+      "verdict": {
+        "status": "confirmed",
+        "reasoning": "The loop `for attempt in range(config.max_retries)` makes max_retries total HTTP attempts, not retries after the first attempt. The default is max_retries=3, so a default delivery sends at most 3 requests, which is 2 retries, not the 3 retries the description promises. With max_retries=0 the loop body never runs, so nothing is sent and the status is set to \"failed\" with no error logged; config/loader.py has no validation that rejects 0.",
+        "evidence": [
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 30,
+            "end_line": 31,
+            "quote": "    for attempt in range(config.max_retries):\n        delivery.attempts += 1"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 27,
+            "end_line": 27,
+            "quote": "    max_retries: int = 3"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 16,
+            "end_line": 16,
+            "quote": "    \"max_retries\": 3,"
+          }
+        ],
+        "trigger": "Any delivery with the default config (max_retries=3) that keeps failing gets exactly 3 POST attempts, not 4 (1 initial + 3 retries). A config with max_retries=0 sends nothing and is marked failed immediately.",
+        "question_for_author": "Should max_retries mean the number of retries after the first attempt, so that the default sends 4 requests total as the description says, or should it mean total attempts and the description be changed to 'up to three attempts'?"
+      },
+      "review": {
+        "holds": true,
+        "kind": "decision",
+        "title": "The loop `range(config.max_retries)` makes max_retries total attempts, so the default of 3 gives 3 POSTs (2 retries), and max_retries=0 sends nothing and marks the delivery failed.",
+        "refutation_attempt": "I read webhooks/deliver.py and config/loader.py. The loop is `for attempt in range(config.max_retries)`, and the body makes one POST per iteration. The default is 3, so a persistently failing delivery gets exactly 3 attempts. With 0 the loop is skipped and status goes straight to \"failed\". I found no validation in config/loader.py and no guard in deliver() that changes this. I could not see the description the claim relies on, so I could not check what it promises. The code behaviour itself is confirmed. Whether it is a bug depends on whether \"max_retries\" is meant as total attempts or as retries after the first attempt.",
+        "question": "The loop makes max_retries total attempts, so the default of 3 means 1 initial attempt plus 2 retries, not 3 retries. Keep that, or change it to max_retries + 1 attempts? Also, should max_retries=0 still make one attempt instead of failing without sending anything?"
+      },
+      "question": "",
+      "detail": "This contradicts the description's 'retried up to three times', and a zero value marks deliveries failed without sending anything.",
+      "priority": "P2",
+      "memory": "",
+      "merged": [],
+      "searched": [
+        "grep /max_retries|base_delay_s/ in .",
+        "webhooks/backoff.py:1-20"
+      ],
+      "jev": {
+        "evidence_supports": 0.52,
+        "stated_in_description": 0.9
+      }
+    },
+    {
+      "id": "h6",
+      "kind": "issue",
+      "title": "Non-HTTPError exceptions such as a malformed URL escape delivery and abort the whole redeliver loop.",
+      "file": "webhooks/deliver.py",
+      "line": 31,
+      "hypothesis": {
+        "id": "h6",
+        "statement": "Only httpx.HTTPError is caught, but raise_for_status turns every 4xx and 5xx into an error. Permanent client errors (400, 401, 404, 410) are retried pointlessly, and non-retryable failures that are not HTTPError (e.g. InvalidURL) still propagate with attempts incremented and status unchanged.",
+        "bug_class": "error_path",
+        "file": "webhooks/deliver.py",
+        "line": 35,
+        "check": "Check whether httpx.HTTPStatusError is retried for 4xx. Check whether InvalidURL or UnsupportedProtocol derive from HTTPError, and what status the delivery is left in when an exception escapes."
+      },
+      "verdict": {
+        "status": "confirmed",
+        "reasoning": "The retry loop catches only httpx.HTTPError, so any other exception from httpx.post escapes deliver() after delivery.attempts was already incremented, and delivery.status is never set to \"failed\". httpx.InvalidURL derives from Exception rather than HTTPError, so a malformed endpoint URL raises straight out with status unchanged. The 4xx point also holds: HTTPStatusError is an HTTPError, so 400/401/404/410 responses are retried three times with sleeps. Whether retrying 4xx is wanted is the author's call, but the escape path is a real defect.",
+        "evidence": [
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 31,
+            "end_line": 31,
+            "quote": "        delivery.attempts += 1"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 33,
+            "end_line": 34,
+            "quote": "            response = httpx.post(delivery.url, content=body, headers=headers, timeout=config.webhook_timeout_s)\n            response.raise_for_status()"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 37,
+            "end_line": 39,
+            "quote": "        except httpx.HTTPError as exc:\n            log.warning(\"delivery %s attempt %d failed: %s\", delivery.id, attempt + 1, exc)\n            time.sleep(next_delay(config.base_delay_s, attempt))"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 40,
+            "end_line": 40,
+            "quote": "    delivery.status = \"failed\""
+          }
+        ],
+        "trigger": "A delivery whose url is malformed so that httpx raises httpx.InvalidURL (not an HTTPError subclass). The exception escapes deliver() on the first attempt, leaving delivery.attempts incremented and delivery.status unchanged, and the caller never sees a \"failed\" status. Separately, any 4xx response such as 410 is retried three times with sleeps before being marked failed.",
+        "question_for_author": ""
+      },
+      "review": {
+        "holds": true,
+        "kind": "issue",
+        "title": "deliver() catches only httpx.HTTPError, so a malformed URL raising httpx.InvalidURL escapes with attempts incremented and status still pending, and it aborts the whole redeliver loop.",
+        "refutation_attempt": "I read deliver.py and jobs/redeliver.py and compared them with the old version. The old code had no try/except at all, so any exception already propagated. The escape is therefore not a regression, but the new retry loop still does not handle it. httpx.InvalidURL derives from Exception, not HTTPError, so nothing in the loop catches it. The only caller, jobs/redeliver.run, has no guard either, so one bad URL stops the nightly batch and leaves later deliveries unsent. I found no validation of the URL elsewhere. The 4xx retry part is a design choice. The InvalidURL escape is the real defect.",
+        "question": ""
+      },
+      "question": "",
+      "detail": "The delivery is left pending with attempts incremented, and the remaining pending deliveries in that run are never sent.",
+      "priority": "P2",
+      "memory": "",
+      "merged": [],
+      "searched": [],
+      "jev": {
+        "evidence_supports": 0.62,
+        "stated_in_description": 0.87
+      }
+    },
+    {
+      "id": "h4",
+      "kind": "issue",
+      "title": "Delivery sleeps after the final failed attempt, wasting 8s before marking it failed.",
+      "file": "webhooks/deliver.py",
+      "line": 30,
+      "hypothesis": {
+        "id": "h4",
+        "statement": "The retry loop sleeps after the final failed attempt, so the caller blocks for an extra base_delay*2^(n-1) (4s with the defaults) before status is set to failed. The sleep is synchronous and the total is long: 2+4+8 = 14s plus 3 timeouts of 5s. This blocks the thread or job that calls deliver.",
+        "bug_class": "error_path",
+        "file": "webhooks/deliver.py",
+        "line": 38,
+        "check": "Look at the loop: time.sleep is called in the except block unconditionally, including when attempt == max_retries-1. Check whether deliver is called from a request handler or a loop in jobs/redeliver.py."
+      },
+      "verdict": {
+        "status": "confirmed",
+        "reasoning": "The except block calls time.sleep unconditionally, and the loop has no check for the last attempt, so after the third failure the code still sleeps before exiting the loop and setting status to failed. The sleep is synchronous and runs in the caller's thread; jobs/redeliver.py calls deliver() in a plain loop. One correction to the hypothesis: with the defaults (base 2.0, attempt index 2 on the final pass), the wasted sleep is 2.0 * 2**2 = 8s, not 4s. The total sleep across all attempts is 2+4+8 = 14s, which matches the hypothesis.",
+        "evidence": [
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 30,
+            "end_line": 39,
+            "quote": "    for attempt in range(config.max_retries):\n        delivery.attempts += 1\n        try:\n            response = httpx.post(delivery.url, content=body, headers=headers, timeout=config.webhook_timeout_s)\n            response.raise_for_status()\n            delivery.status = \"delivered\"\n            return\n        except httpx.HTTPError as exc:\n            log.warning(\"delivery %s attempt %d failed: %s\", delivery.id, attempt + 1, exc)\n            time.sleep(next_delay(config.base_delay_s, attempt))"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 40,
+            "end_line": 40,
+            "quote": "    delivery.status = \"failed\""
+          },
+          {
+            "file": "webhooks/backoff.py",
+            "start_line": 4,
+            "end_line": 5,
+            "quote": "def next_delay(base_delay_s: float, attempt: int) -> float:\n    return base_delay_s * 2 ** attempt"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 27,
+            "end_line": 28,
+            "quote": "    max_retries: int = 3\n    base_delay_s: float = 2.0"
+          },
+          {
+            "file": "jobs/redeliver.py",
+            "start_line": 16,
+            "end_line": 16,
+            "quote": "        deliver(delivery, config)"
+          }
+        ],
+        "trigger": "A delivery whose endpoint fails on all three attempts (for example, it returns 5xx or times out every time). The worker then sleeps 2s, 4s and 8s, which includes an unnecessary 8s sleep after the last attempt, before status is set to failed. Each call from jobs/redeliver.py blocks for that time.",
+        "question_for_author": ""
+      },
+      "review": {
+        "holds": true,
+        "kind": "issue",
+        "title": "deliver() sleeps after the final failed attempt, so a delivery that always fails waits an extra 8s (2.0 * 2**2) before it is marked failed.",
+        "refutation_attempt": "I read deliver.py and found no guard on the last attempt: time.sleep runs unconditionally in the except block. I read redeliver.py and confirmed it calls deliver() synchronously in a loop. The old version had no retry or sleep, so the new loop introduced this wait. Nothing makes it unreachable. The wasted sleep is 8s with the defaults, not the 4s the claim's headline says, but the claim's own reasoning corrects this to 8s. The impact is modest, because the caller is a nightly job and the extra wait only delays marking the delivery failed.",
+        "question": ""
+      },
+      "question": "",
+      "detail": "Each permanently failing delivery blocks the redeliver job for an extra 8 seconds.",
+      "priority": "P2",
+      "memory": "",
+      "merged": [],
+      "searched": [
+        "webhooks/backoff.py:1-30",
+        "grep /max_retries|base_delay_s|deliver\\(/ in ."
+      ],
+      "jev": {
+        "evidence_supports": 0.58,
+        "stated_in_description": 0.89
+      }
+    },
+    {
+      "id": "h9",
+      "kind": "decision",
+      "title": "Backoff has no cap or jitter, and max_retries is unbounded, with synchronous sleeps.",
+      "file": "webhooks/backoff.py",
+      "line": 4,
+      "hypothesis": {
+        "id": "h9",
+        "statement": "next_delay has no cap or jitter. A large max_retries config value makes the delay grow exponentially (2*2^n), potentially hours, and blocks the thread. Many deliveries failing at once retry in lockstep, causing a thundering herd.",
+        "bug_class": "limits_or_truncation",
+        "file": "webhooks/backoff.py",
+        "line": 5,
+        "check": "Check whether max_retries is bounded anywhere. Compute the delay for max_retries=10 or more."
+      },
+      "verdict": {
+        "status": "confirmed",
+        "reasoning": "next_delay has no cap or jitter, and nothing bounds max_retries: config/loader.py reads it straight from TOML with no validation, and deliver() loops range(config.max_retries) and sleeps synchronously after every failed attempt. With base_delay_s=2.0 and max_retries=10, the sleeps are 2, 4, ..., 1024 s, about 34 minutes of blocking in one call, and attempt 20 alone would sleep about 24 days. The lockstep concern is also real: with no jitter, deliveries that fail together retry at identical offsets. The description's 'up to three times' holds only for the default, not as an enforced limit.",
+        "evidence": [
+          {
+            "file": "webhooks/backoff.py",
+            "start_line": 4,
+            "end_line": 5,
+            "quote": "def next_delay(base_delay_s: float, attempt: int) -> float:\n    return base_delay_s * 2 ** attempt"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 27,
+            "end_line": 27,
+            "quote": "    max_retries: int = 3"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 35,
+            "end_line": 36,
+            "quote": "    raw = tomllib.loads(path.read_text())\n    return Config(**raw[\"webhooks\"])"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 30,
+            "end_line": 30,
+            "quote": "    for attempt in range(config.max_retries):"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 37,
+            "end_line": 39,
+            "quote": "    except httpx.HTTPError as exc:\n            log.warning(\"delivery %s attempt %d failed: %s\", delivery.id, attempt + 1, exc)\n            time.sleep(next_delay(config.base_delay_s, attempt))"
+          }
+        ],
+        "trigger": "A config file sets max_retries = 10 (or higher) under [webhooks] with base_delay_s = 2.0, and an endpoint keeps returning HTTP errors; the delivery thread then sleeps roughly 34 minutes in total, and a single attempt can sleep for many minutes or days at higher values.",
+        "question_for_author": ""
+      },
+      "review": {
+        "holds": true,
+        "kind": "decision",
+        "title": "Retry delay doubles with every attempt, with no cap and no jitter, and the thread sleeps synchronously. Nothing bounds max_retries, so a large configured value blocks one delivery for a very long time.",
+        "refutation_attempt": "I read deliver.py and the old version. The retry loop and the sleep are new in this change, and the original made a single attempt. I found no validation of max_retries and no cap or jitter. The default of 3 gives sleeps of 2, 4 and 8 seconds, which is harmless. That includes a pointless sleep after the final failed attempt. Large delays only happen if an operator sets max_retries high, so the failure depends on config and is not a bug under the defaults. Lockstep retries need many deliveries failing at the same moment, and nothing in this code prevents that.",
+        "question": "Retries now sleep base_delay_s * 2**attempt with no cap or jitter, and also sleep after the last failed attempt. Previously there was one attempt and no retry. Keep that, or add a max delay, jitter and a bound on max_retries?"
+      },
+      "question": "Add a delay cap, jitter, or a max_retries bound?",
+      "detail": "max_retries=10 blocks one delivery for about 34 minutes, and deliveries that fail together retry in lockstep.",
+      "priority": "P2",
+      "memory": "",
+      "merged": [],
+      "searched": [
+        "grep /max_retries|next_delay|MAX_RETRIES|sleep/ in .",
+        "webhooks/deliver.py:1-80",
+        "config/loader.py:1-80"
+      ],
+      "jev": {
+        "evidence_supports": 0.76,
+        "stated_in_description": 0.58
+      }
+    },
+    {
+      "id": "h7",
+      "kind": "issue",
+      "title": "Retries send no delivery id, so customers cannot dedupe duplicate events",
+      "file": "webhooks/deliver.py",
+      "line": 27,
+      "hypothesis": {
+        "id": "h7",
+        "statement": "Retries re-send the same body with no idempotency key or delivery id header. If a request timed out after the customer processed it, the customer receives duplicate events and cannot dedupe. The signature is also unchanged across retries, with no timestamp.",
+        "bug_class": "retry_or_partial_failure",
+        "file": "webhooks/deliver.py",
+        "line": 32,
+        "check": "Check the headers built before the loop. Look for an event id or idempotency header. Check whether receivers can dedupe."
+      },
+      "verdict": {
+        "status": "unresolved",
+        "reasoning": "The headers built before the loop are only content-type and, when verify_signature is set, x-signature; no delivery id or idempotency header is added, and the loop re-sends the same body on every attempt (deliver.py lines 27-37). Delivery.id exists and is logged but never sent to the receiver. Because httpx.HTTPError covers timeouts, a request the customer already processed can be retried and delivered twice. Whether receivers can dedupe depends on whether the payload carries its own event id, which is built by callers outside this change and was not found by searching the repo.",
+        "evidence": [
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 27,
+            "end_line": 29,
+            "quote": "    headers = {\"content-type\": \"application/json\"}\n    if config.verify_signature:\n        headers[\"x-signature\"] = sign(config.signing_secret, body)"
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 30,
+            "end_line": 39,
+            "quote": "    for attempt in range(config.max_retries):\n        delivery.attempts += 1\n        try:\n            response = httpx.post(delivery.url, content=body, headers=headers, timeout=config.webhook_timeout_s)\n            response.raise_for_status()\n            delivery.status = \"delivered\"\n            return\n        except httpx.HTTPError as exc:\n            log.warning(\"delivery %s attempt %d failed: %s\", delivery.id, attempt + 1, exc)\n            time.sleep(next_delay(config.base_delay_s, attempt))"
+          }
+        ],
+        "trigger": "",
+        "question_for_author": "When a delivery attempt times out or fails and is retried, should the receiver be able to tell the retry apart from the original, for example by sending the delivery id or an idempotency key header, or is at-least-once delivery with possible duplicates the intended contract?"
+      },
+      "review": null,
+      "question": "",
+      "detail": "The author confirmed they need a delivery id because duplicates would double-charge customers, so the absence of one is a defect. The code builds headers with only content-type and optional x-signature, never adding Delivery.id, and retries the same body on httpx.HTTPError, including timeouts.",
+      "priority": "P1",
+      "memory": "confirmed after your answer",
+      "merged": [],
+      "searched": [
+        "grep /idempot|event_id|x-delivery|x-event|delivery_id/ in .",
+        "webhooks/deliver.py:14-26"
+      ],
+      "jev": {
+        "stated_in_description": 0.87
+      }
+    },
+    {
+      "id": "h8",
+      "kind": "background",
+      "title": "Attempt counter accumulates across redelivery runs with no overall cap on attempts.",
+      "file": "jobs/redeliver.py",
+      "line": 8,
+      "hypothesis": {
+        "id": "h8",
+        "statement": "The jobs/redeliver.py job calls deliver on stored deliveries, and delivery.attempts accumulates across calls while the status is set to failed. A redelivery re-runs the full retry cycle each time, so there is no overall cap on attempts. Callers also do not persist the status on the failure path, so the status can be lost.",
+        "bug_class": "stale_state",
+        "file": "webhooks/deliver.py",
+        "line": 40,
+        "check": "Read jobs/redeliver.py near line 16 to see whether it saves the delivery after deliver and whether it selects deliveries with status failed, which would loop forever."
+      },
+      "verdict": {
+        "status": "unresolved",
+        "reasoning": "In the repo, jobs/redeliver.py runs deliver() on whatever list it receives and never saves the delivery afterwards, so persistence of status and attempts is not in this file. The 'pending' selection that feeds the job is in a caller I could not find in the repository, so I cannot tell whether failed deliveries get re-fed each night. Within one deliver() call the retries are capped at config.max_retries, but attempts itself is an unbounded counter across calls.",
+        "evidence": [
+          {
+            "file": "jobs/redeliver.py",
+            "start_line": 8,
+            "end_line": 17,
+            "quote": "def run(pending: list[Delivery], config_path: Path) -> int:\n    ...\n    for delivery in pending:\n        deliver(delivery, config)\n        sent += 1"
+          },
+          {
+            "file": "jobs/redeliver.py",
+            "start_line": 1,
+            "end_line": 1,
+            "quote": "\"\"\"Nightly job that re-sends deliveries stuck in pending.\"\"\""
+          },
+          {
+            "file": "webhooks/deliver.py",
+            "start_line": 28,
+            "end_line": 36,
+            "quote": "    for attempt in range(config.max_retries):\n        delivery.attempts += 1"
+          }
+        ],
+        "trigger": "",
+        "question_for_author": "Should a delivery that already exhausted its retries and was marked failed be picked up again by the nightly redelivery job, and if so, is there a cap on total attempts across runs?"
+      },
+      "review": null,
+      "question": "",
+      "detail": "Whether failed deliveries are picked up again each night depends on callers outside this change.",
+      "priority": "P2",
+      "memory": "",
+      "merged": [],
+      "searched": [
+        "jobs/redeliver.py:1-40",
+        "grep /redeliver|deliver\\(/ in ."
+      ],
+      "jev": {}
+    },
+    {
+      "id": "h3",
+      "kind": "background",
+      "title": "A partial config still raises TypeError, while a missing file now uses defaults.",
+      "file": "config/loader.py",
+      "line": 24,
+      "hypothesis": {
+        "id": "h3",
+        "statement": "Config(**raw[\"webhooks\"]) uses the dataclass defaults for max_retries and base_delay_s, but webhook_timeout_s and verify_signature have no defaults. Existing config files lacking those keys still raise TypeError, while a missing file now works. Conversely, unknown keys in the toml still raise TypeError.",
+        "bug_class": "config_or_default",
+        "file": "config/loader.py",
+        "line": 32,
+        "check": "Check existing config TOML files for the [webhooks] keys and whether the partial-config path behaves consistently with the DEFAULTS path."
+      },
+      "verdict": {
+        "status": "unresolved",
+        "reasoning": "The code does what the hypothesis says: `Config` requires `webhook_timeout_s` and `verify_signature` with no defaults, so a `[webhooks]` table missing either key raises TypeError at `Config(**raw[\"webhooks\"])`, and unknown keys also raise. The missing-file path now returns `Config(**DEFAULTS)`, which fills every field, so the two paths are inconsistent. This is not a regression, though: the old code also called `Config(**raw[\"webhooks\"])` unchanged, so partial configs already raised before this diff. Whether partial configs should fall back to DEFAULTS is a product decision I cannot settle from the repository, and I did not check the repo's real TOML files.",
+        "evidence": [
+          {
+            "file": "config/loader.py",
+            "start_line": 24,
+            "end_line": 25,
+            "quote": "    webhook_timeout_s: float\n    verify_signature: bool"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 32,
+            "end_line": 34,
+            "quote": "    if not path.exists():\n        log.warning(\"config missing, using defaults\")\n        return Config(**DEFAULTS)"
+          },
+          {
+            "file": "config/loader.py",
+            "start_line": 36,
+            "end_line": 36,
+            "quote": "    return Config(**raw[\"webhooks\"])"
+          }
+        ],
+        "trigger": "",
+        "question_for_author": "When the config file exists but its [webhooks] table omits webhook_timeout_s or verify_signature, should load_config fill those from DEFAULTS the same way it does when the file is missing, or should it keep raising TypeError?"
+      },
+      "review": null,
+      "question": "",
+      "detail": "This behaviour predates the change.",
+      "priority": "P2",
+      "memory": "",
+      "merged": [],
+      "searched": [],
+      "jev": {}
+    }
+  ],
+  "dropped": [
+    {
+      "hypothesis": {
+        "id": "h2",
+        "statement": "A missing config silently turns off signature verification (DEFAULTS verify_signature=False). A production misconfiguration, such as a wrong path, would send unsigned webhooks with only a warning log. This change was not requested in the description.",
+        "bug_class": "scope_beyond_intent",
+        "file": "config/loader.py",
+        "line": 11,
+        "check": "Compare DEFAULTS to what production config sets. Confirm no other code requires the secret. Check whether the old behaviour (raising) was intentional fail-closed."
+      },
+      "reason": "merged into h1",
+      "stage": "duplicate"
+    }
+  ],
+  "stages": [
+    {
+      "name": "read",
+      "detail": "read 3 files against main",
+      "seconds": 0.0815736660733819
+    },
+    {
+      "name": "map",
+      "detail": "mapped 12 uses of what changed",
+      "seconds": 0.0948791247792542
+    },
+    {
+      "name": "ideas",
+      "detail": "9 ideas about what could break",
+      "seconds": 14.4384705000557
+    },
+    {
+      "name": "check",
+      "detail": "checked each one · 0 dropped, no evidence",
+      "seconds": 16.344606874976307
+    },
+    {
+      "name": "done",
+      "detail": "done · 3 issues, 3 things only you can decide",
+      "seconds": 23.340984667185694
+    }
+  ],
+  "usage": {
+    "input_tokens": 92973,
+    "output_tokens": 20077,
+    "cache_read_tokens": 29554,
+    "cache_write_tokens": 22078,
+    "cost_usd": 0.26176909000000004,
+    "jev_calls": 12
+  },
+  "seconds": 54.30139120807871
+}

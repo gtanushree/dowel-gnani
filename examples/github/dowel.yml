@@ -1,0 +1,46 @@
+# Copy to .github/workflows/dowel.yml in your repository.
+#
+# On every pull request this:
+#   1. runs `dowel check`, which needs no keys: weakened tests, failing guard tests, packages that
+#      do not exist, and code changed under a recorded decision;
+#   2. posts the reviewer's brief as one comment, updated on each push.
+#
+# No GitHub App and no secrets are needed for this. The check does not block merging unless you
+# remove `continue-on-error`. To have a model judge changed code against its decisions, add an
+# ANTHROPIC_API_KEY secret and uncomment the last step.
+
+name: dowel
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  dowel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the check compares with the base branch, so it needs history
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install Dowel
+        run: uv tool install git+https://github.com/OWNER/dowel # replace OWNER, or use a path
+
+      - name: Check
+        id: check
+        continue-on-error: true
+        run: dowel check --base "origin/${{ github.base_ref }}"
+
+      - name: Post the brief
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: dowel brief --base "origin/${{ github.base_ref }}" --github
+
+      # - name: Judge changed code against its decisions
+      #   env:
+      #     ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      #   run: dowel check --base "origin/${{ github.base_ref }}" --judge

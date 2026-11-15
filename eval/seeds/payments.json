@@ -1,0 +1,12 @@
+{
+  "branch": "retry-webhooks",
+  "base": "main",
+  "expected": [
+    {"id": "missing_config_starts", "kind": "decision", "match": "config (file )?(is )?missing|missing config|ConfigMissing|without a config|no config"},
+    {"id": "signature_off_by_default", "kind": "decision", "match": "signature|unsigned|verify_signature"},
+    {"id": "retries_permanent_errors", "kind": "issue", "match": "4xx|permanent|client error|\\b40[0-9]\\b|non-retryable"},
+    {"id": "sleeps_after_last_attempt", "kind": "issue", "match": "(sleep|wait)s?.{0,40}(last|final)|after the (last|final) (attempt|failure|try)"},
+    {"id": "failed_counted_as_sent", "kind": "issue", "match": "count(s|ed)? .{0,40}(sent|failed)|sent \\+= 1|as sent"},
+    {"id": "unbounded_delay", "kind": "any", "match": "no (upper )?(limit|cap|ceiling|bound)|unbounded|without (a |an )?(upper )?(limit|cap|ceiling)"}
+  ]
+}

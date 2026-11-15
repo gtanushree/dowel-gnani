@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+node_modules/
+.venv/
+__pycache__/
+.DS_Store
+voice-samples/
+eval/results/
+eval/greptile/
+eval/*.local.json
+.claude/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+demo/

@@ -1,0 +1,52 @@
+{
+  "items": {
+    "h1": {
+      "included": true,
+      "answer": "keep",
+      "note": "Staging hosts don't have a config file.",
+      "noise": false
+    },
+    "h5": {
+      "included": true,
+      "answer": null,
+      "note": "",
+      "noise": false
+    },
+    "h6": {
+      "included": true,
+      "answer": null,
+      "note": "",
+      "noise": false
+    },
+    "h4": {
+      "included": true,
+      "answer": null,
+      "note": "",
+      "noise": false
+    },
+    "h9": {
+      "included": true,
+      "answer": "change",
+      "note": "Add a delay cap and jitter.",
+      "noise": false
+    },
+    "h7": {
+      "included": true,
+      "answer": "change",
+      "note": "customers would double-charge, so need delivery id",
+      "noise": false
+    },
+    "h8": {
+      "included": true,
+      "answer": null,
+      "note": "",
+      "noise": false
+    },
+    "h3": {
+      "included": true,
+      "answer": null,
+      "note": "",
+      "noise": false
+    }
+  }
+}
